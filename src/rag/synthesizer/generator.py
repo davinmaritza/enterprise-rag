@@ -84,11 +84,30 @@ class RAGSynthesizer:
                 if res.status_code == 200:
                     data = res.json()
                     answer = data["choices"][0]["message"]["content"]
+                    usage = data.get("usage", {})
+                    p_tok = usage.get("prompt_tokens") or len(user_prompt.split())
+                    c_tok = usage.get("completion_tokens") or len(answer.split())
+                    
+                    try:
+                        from src.rag.observability.tracer import default_tracer
+                        default_tracer.record_llm_metrics(
+                            model=self.model,
+                            prompt_tokens=p_tok,
+                            completion_tokens=c_tok,
+                        )
+                    except Exception:
+                        pass
+
                     return {
                         "answer": answer,
                         "model": self.model,
                         "used_chunks_count": len(context_chunks),
                         "citations": [c.get("source") for c in context_chunks],
+                        "usage": {
+                            "prompt_tokens": p_tok,
+                            "completion_tokens": c_tok,
+                            "total_tokens": p_tok + c_tok,
+                        },
                     }
         except Exception as err:
             logger.warning("LLM generation request failed: %s. Returning structured context answer.", err)
@@ -100,9 +119,26 @@ class RAGSynthesizer:
         for idx, c in enumerate(context_chunks, 1):
             fallback_answer += f"**{idx}. [{c.get('source')}] {c.get('header_context', '')}**\n{c.get('content')}\n\n"
 
+        fb_p_tok = len(user_prompt.split())
+        fb_c_tok = len(fallback_answer.split())
+        try:
+            from src.rag.observability.tracer import default_tracer
+            default_tracer.record_llm_metrics(
+                model="local_fallback",
+                prompt_tokens=fb_p_tok,
+                completion_tokens=fb_c_tok,
+            )
+        except Exception:
+            pass
+
         return {
             "answer": fallback_answer.strip(),
             "model": "local_fallback",
             "used_chunks_count": len(context_chunks),
             "citations": [c.get("source") for c in context_chunks],
+            "usage": {
+                "prompt_tokens": fb_p_tok,
+                "completion_tokens": fb_c_tok,
+                "total_tokens": fb_p_tok + fb_c_tok,
+            },
         }
